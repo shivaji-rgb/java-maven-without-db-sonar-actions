@@ -125,7 +125,35 @@ jobs:
           echo "S3_KEY=$S3_KEY" >> "$GITHUB_ENV"
 
           echo "JAR uploaded successfully!"
+            # Debug EC2 and SSM connectivity
+      - name: Debug EC2 SSM Status
+        env:
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          echo "========== AWS Account =========="
+          aws sts get-caller-identity
 
+          echo "========== EC2 Instance Status =========="
+          aws ec2 describe-instances \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --region "$AWS_REGION" \
+            --query 'Reservations[].Instances[].{
+              InstanceId:InstanceId,
+              State:State.Name,
+              IAMProfile:IamInstanceProfile.Arn
+            }'
+
+          echo "========== SSM Managed Instance Status =========="
+          aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=$EC2_INSTANCE_ID" \
+            --region "$AWS_REGION" \
+            --query 'InstanceInformationList[].{
+              InstanceId:InstanceId,
+              PingStatus:PingStatus,
+              AgentVersion:AgentVersion,
+              PlatformName:PlatformName
+            }'
       # 10. Deploy to private EC2 using SSM
       - name: Deploy to EC2 using SSM
         env:
