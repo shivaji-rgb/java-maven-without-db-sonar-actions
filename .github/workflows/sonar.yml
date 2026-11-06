@@ -1,3 +1,4 @@
+
 name: Java Maven CI-CD
 
 on:
@@ -49,27 +50,73 @@ jobs:
           fi
 
           echo "JAR_FILE=$JAR_FILE" >> "$GITHUB_OUTPUT"
-
           echo "Generated JAR: $JAR_FILE"
 
-      # 6. Authenticate with AWS using GitHub OIDC
+      # 6. Debug GitHub OIDC Claims
+      - name: Debug GitHub OIDC Claims
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========== GitHub Context =========="
+          echo "Repository : $GITHUB_REPOSITORY"
+          echo "Branch     : $GITHUB_REF"
+          echo "Actor      : $GITHUB_ACTOR"
+          echo "Event      : $GITHUB_EVENT_NAME"
+
+          echo "========== Expected OIDC Subject =========="
+          echo "repo:${GITHUB_REPOSITORY}:ref:${GITHUB_REF}"
+
+          echo "========== Request OIDC Token =========="
+          RESPONSE=$(curl -fsS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+
+          TOKEN=$(echo "$RESPONSE" | jq -r '.value')
+
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Unable to retrieve OIDC token"
+            exit 1
+          fi
+
+          echo "========== Actual OIDC Claims =========="
+          PAYLOAD=$(echo "$TOKEN" | cut -d '.' -f 2 | tr '_-' '/+')
+
+          case $((${#PAYLOAD} % 4)) in
+            2) PAYLOAD="${PAYLOAD}==" ;;
+            3) PAYLOAD="${PAYLOAD}=" ;;
+          esac
+
+          echo "$PAYLOAD" | base64 -d | jq '{
+            sub,
+            aud,
+            repository,
+            repository_owner,
+            ref,
+            event_name
+          }'
+
+      # 7. Authenticate with AWS using GitHub OIDC
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      # 7. Verify AWS identity
+      # 8. Verify AWS identity
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
-      # 8. Upload JAR to S3
+      # 9. Upload JAR to S3
       - name: Upload JAR to S3
         env:
           S3_BUCKET: ${{ vars.S3_BUCKET }}
           JAR_FILE: ${{ steps.jar.outputs.JAR_FILE }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           S3_KEY="releases/${GITHUB_SHA}/app.jar"
 
           aws s3 cp "$JAR_FILE" \
@@ -79,12 +126,13 @@ jobs:
 
           echo "JAR uploaded successfully!"
 
-      # 9. Deploy to private EC2 using SSM
+      # 10. Deploy to private EC2 using SSM
       - name: Deploy to EC2 using SSM
         env:
           EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
           S3_BUCKET: ${{ vars.S3_BUCKET }}
           AWS_REGION: ${{ vars.AWS_REGION }}
+          S3_KEY: releases/${{ github.sha }}/app.jar
         shell: bash
         run: |
           set -euo pipefail
@@ -95,6 +143,7 @@ jobs:
             --arg region "$AWS_REGION" \
             '[
               "set -e",
+              "mkdir -p /opt/myapp",
               "aws s3 cp s3://\($bucket)/\($key) /opt/myapp/app.jar.tmp --region \($region)",
               "chmod 644 /opt/myapp/app.jar.tmp",
               "mv /opt/myapp/app.jar.tmp /opt/myapp/app.jar",
