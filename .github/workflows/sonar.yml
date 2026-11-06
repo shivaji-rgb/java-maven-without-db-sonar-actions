@@ -154,7 +154,8 @@ jobs:
               AgentVersion:AgentVersion,
               PlatformName:PlatformName
             }'
-      # 10. Deploy to private EC2 using SSM
+     
+      # 10. Deploy Java application to private EC2 using SSM
       - name: Deploy to EC2 using SSM
         env:
           EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
@@ -171,12 +172,37 @@ jobs:
             --arg region "$AWS_REGION" \
             '[
               "set -e",
+
+              "echo Creating application directory",
               "mkdir -p /opt/myapp",
+
+              "echo Checking Java installation",
+              "command -v java",
+
+              "echo Downloading application JAR",
               "aws s3 cp s3://\($bucket)/\($key) /opt/myapp/app.jar.tmp --region \($region)",
+
               "chmod 644 /opt/myapp/app.jar.tmp",
               "mv /opt/myapp/app.jar.tmp /opt/myapp/app.jar",
+
+              "echo Creating systemd service",
+              "cat > /etc/systemd/system/myapp.service <<EOF\n[Unit]\nDescription=FreshDrop Java Spring Boot Application\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/myapp\nExecStart=$(command -v java) -jar /opt/myapp/app.jar\nSuccessExitStatus=143\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\nEOF",
+
+              "echo Reloading systemd",
+              "systemctl daemon-reload",
+
+              "echo Enabling application service",
+              "systemctl enable myapp",
+
+              "echo Restarting application",
               "systemctl restart myapp",
-              "systemctl is-active myapp"
+
+              "sleep 10",
+
+              "echo Checking application status",
+              "systemctl is-active myapp",
+
+              "echo Deployment completed"
             ]')
 
           PARAMETERS=$(jq -n \
@@ -186,14 +212,13 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "Java Maven GitHub Actions deployment" \
+            --comment "Java Spring Boot deployment" \
             --parameters "$PARAMETERS" \
             --query "Command.CommandId" \
             --output text)
 
           echo "SSM Command ID: $COMMAND_ID"
 
-          # Wait for deployment result
           for attempt in $(seq 1 60); do
 
             STATUS=$(aws ssm get-command-invocation \
@@ -202,11 +227,11 @@ jobs:
               --query "Status" \
               --output text 2>/dev/null || echo "Pending")
 
-            echo "Current deployment status: $STATUS"
+            echo "Deployment status: $STATUS"
 
             case "$STATUS" in
               Success)
-                echo "Application deployed successfully!"
+                echo "Java application deployed successfully!"
                 exit 0
                 ;;
 
@@ -221,6 +246,13 @@ jobs:
                 exit 1
                 ;;
             esac
+
+            sleep 5
+          done
+
+          echo "Deployment timed out!"
+          exit 1
+
 
             sleep 5
           done
